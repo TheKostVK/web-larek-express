@@ -35,6 +35,49 @@ jobs:
     - name: Get testing lib
       run: set -eu && git clone --depth 1 $REP_TESTS $DIR_TESTS
     - name: Start project
-      run: bash $DIR_TESTS/bin/start_project.sh
+      run: |
+        set -eu
+        cp backend/.env.example backend/.env
+        sed -i 's#^DB_ADDRESS=.*#DB_ADDRESS=mongodb://root:example@mongo:27017/weblarek?authSource=admin#; s#^ORIGIN_ALLOW=.*#ORIGIN_ALLOW=http://localhost#' backend/.env
+        cp frontend/.env.example frontend/.env
+        sed -i 's#^VITE_API_ORIGIN=.*#VITE_API_ORIGIN=http://localhost/api#' frontend/.env
+        docker compose up -d --build
+    - name: Prepare API session
+      run: |
+        set -eu
+        curl --fail --silent --show-error \
+          --retry 60 --retry-delay 2 --retry-connrefused --retry-all-errors \
+          --connect-timeout 2 --max-time 5 --retry-max-time 120 \
+          http://localhost/api/product > /dev/null
+        docker compose exec -T backend node -e "require('fs').copyFileSync('src/public/images/5_Dots.png', 'src/public/images/image.png')"
+        node <<'NODE'
+        const fs = require('fs');
+        const { randomUUID } = require('crypto');
+        (async () => {
+          const response = await fetch('http://localhost/api/auth/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: 'ci@example.org', password: randomUUID() }),
+          });
+          if (!response.ok) throw new Error(`Registration failed: ${response.status}`);
+          const { accessToken } = await response.json();
+          console.log(`::add-mask::${accessToken}`);
+          const file = `${process.env.DIR_TESTS}/collections/sprint-13.json`;
+          const collection = JSON.parse(fs.readFileSync(file, 'utf8'));
+          collection.auth = {
+            type: 'bearer',
+            bearer: [{ key: 'token', value: accessToken, type: 'string' }],
+          };
+          fs.writeFileSync(file, JSON.stringify(collection));
+        })().catch((error) => {
+          console.error(error.message);
+          process.exitCode = 1;
+        });
+        NODE
     - name: Run tests
       run: bash $DIR_TESTS/bin/endpoints.sh
+    - name: Show container logs on failure
+      if: failure()
+      run: |
+        docker compose ps -a
+        docker compose logs --no-color --tail=100 mongo backend
