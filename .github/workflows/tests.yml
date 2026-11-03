@@ -45,7 +45,10 @@ jobs:
     - name: Prepare API session
       run: |
         set -eu
-        npx --yes wait-port@1.0.4 -t 120000 localhost:80
+        curl --fail --silent --show-error \
+          --retry 60 --retry-delay 2 --retry-connrefused --retry-all-errors \
+          --connect-timeout 2 --max-time 5 --retry-max-time 120 \
+          http://localhost/api/product > /dev/null
         docker compose exec -T backend node -e "require('fs').copyFileSync('src/public/images/5_Dots.png', 'src/public/images/image.png')"
         node <<'NODE'
         const fs = require('fs');
@@ -73,3 +76,8 @@ jobs:
         NODE
     - name: Run tests
       run: bash $DIR_TESTS/bin/endpoints.sh
+    - name: Show container logs on failure
+      if: failure()
+      run: |
+        docker compose ps -a
+        docker compose logs --no-color --tail=100 mongo backend
